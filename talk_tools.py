@@ -74,6 +74,8 @@ REGISTRATION_REQUIREMENTS: dict[str, str] = {
     "subagent_stop_hook": "optional",
     "post_tool_call_hook": "optional",
     "pre_approval_request_hook": "optional",
+    "live_direct_pre_llm_hook": "optional",  # local fork: live-direct GPT-Live on Discord
+    "live_direct_post_llm_hook": "optional",
     "tts_provider": "optional",
     "transcription_provider": "optional",
     "realtime_voice_provider": "optional",

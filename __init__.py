@@ -27,6 +27,7 @@ try:
         talk_core_provider,
         talk_core_realtime,
         talk_discord,
+        talk_discord_live,
         talk_host,
         talk_lifecycle,
         talk_progress,
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - flat-module fallback (pip -e install)
     import talk_core_provider
     import talk_core_realtime
     import talk_discord
+    import talk_discord_live
     import talk_host
     import talk_lifecycle
     import talk_progress
@@ -234,6 +236,12 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
             else ("Voice session ended with errors — see stderr.")
         )
 
+    # Local fork (alfred/live-direct): GPT-Live on a host without Discord task context.
+    if _live_direct_enabled():
+        live_reply = _live_direct_command(raw, sub)
+        if live_reply is not None:
+            return live_reply
+
     canonical = talk_discord.native_session_active()
     requested = raw.split(maxsplit=1)[0].lower() if raw else "join"
     explicit_target = requested == "join" and len(raw.split(maxsplit=1)) > 1
@@ -278,6 +286,40 @@ def _talk_command(raw_args: str = "", invocation=None) -> str:
         return talk_discord.start_session()
     return talk_discord.JOIN_USAGE
 
+
+
+def _live_direct_enabled() -> bool:
+    """GPT-Live on Discord without the Talk-enabled host build (local fork lane)."""
+    flag = (os.environ.get("TALK_LIVE_DISCORD_DIRECT") or "auto").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if talk_config.voice_mode() != "live":
+        return False
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    try:  # auto: only when the host cannot run the canonical lane
+        import importlib.util
+        return importlib.util.find_spec("gateway.discord_task_context") is None
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _live_direct_invoker() -> str:
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return ""
+    return get_session_env("HERMES_SESSION_USER_ID") or ""
+
+
+def _live_direct_command(raw: str, sub: str):
+    if sub in {"", "join"}:
+        return talk_discord_live.start(_live_direct_invoker())
+    if sub in {"leave", "stop", "hang up"} and talk_discord_live.session_active():
+        return talk_discord_live.stop()
+    if sub == "status" and talk_discord_live.session_active():
+        return talk_discord_live.status()
+    return None
 
 
 async def _talk_command_on_gateway_loop(raw_args: str = "", invocation=None) -> str:
@@ -517,6 +559,17 @@ def register(ctx) -> None:
     else:
         _unsupported("tts provider", "tts_provider")
         _unsupported("transcription provider", "transcription_provider")
+
+    # Local fork (alfred/live-direct): route GPT-Live delegations through ordinary Hermes turns.
+    # Registered last so the upstream surfaces keep their order.
+    _attempt_registration(
+        ctx, "register_hook", "live-direct pre-LLM hook", "live_direct_pre_llm_hook",
+        "pre_llm_call", talk_discord_live.pre_llm_call_hook,
+    )
+    _attempt_registration(
+        ctx, "register_hook", "live-direct post-LLM hook", "live_direct_post_llm_hook",
+        "post_llm_call", talk_discord_live.post_llm_call_hook,
+    )
 
 
 __all__ = ["REGISTRATION_FAILURES", "REGISTRATION_RECEIPTS", "register"]

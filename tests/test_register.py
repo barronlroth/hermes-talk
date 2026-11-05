@@ -141,6 +141,8 @@ def test_register_wires_every_surface(plugin, monkeypatch):
         "subagent_stop",
         "post_tool_call",
         "pre_approval_request",
+        "pre_llm_call",  # local fork: live-direct GPT-Live on Discord
+        "post_llm_call",
     ]
     assert len(ctx.tts_providers) == 1
     assert len(ctx.stt_providers) == 1
@@ -257,7 +259,7 @@ def test_every_surface_failing_is_recorded_separately(plugin, monkeypatch):
     # the registration instead and records one more failure.
     legacy_core = plugin.talk_core_realtime.core_provider_available()
     full_core = plugin.talk_core_provider.core_contract_available()
-    expected_failures = 9 + int(legacy_core) + int(full_core)
+    expected_failures = 11 + int(legacy_core) + int(full_core)  # +2 local live-direct hooks
     assert len(plugin.REGISTRATION_FAILURES) == expected_failures
     assert plugin.talk_host.get_ctx() is ctx
     expected_receipts = (
@@ -334,7 +336,7 @@ def test_absent_optional_methods_warn_without_registration_failure(plugin, monke
     check = plugin.talk_cli.talk_doctor._plugin_check()
     assert check["status"] == "warn"
     assert check["details"]["required_issue_count"] == 0
-    assert check["details"]["optional_issue_count"] == 9
+    assert check["details"]["optional_issue_count"] == 11  # +2 local live-direct hooks
 
 
 def test_absent_required_method_is_a_required_failure_not_an_exception(plugin, monkeypatch):

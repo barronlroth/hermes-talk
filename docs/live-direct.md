@@ -31,7 +31,9 @@ Install the `[live]` extra (`aiortc`) into the Python environment the **gateway*
 
 ## Usage
 
-Join a voice channel, then run `/voice join` followed by `/talk join`. Run `/talk leave` to hang up.
+Join a voice channel and run `/talk join`. If the bot isn't in a voice channel yet, it joins yours (same as `/voice join`), binds the current text channel, and starts GPT-Live. `/talk leave` hangs up and leaves the channel.
+
+Voices (`TALK_LIVE_VOICE`): the GPT-Live 1 set plus the 1.1 set (bubbie, aube, rivage, sonna, miko, leher, neer, himari, rindo, haetsal, hanul, tinta, arrullo, viola, rio). The Codex subscription endpoint picks the model server-side, so `gpt-live-1-codex` already runs 1.1.
 
 ## Known limitations
 

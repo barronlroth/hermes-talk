@@ -314,9 +314,10 @@ def _live_direct_invoker() -> str:
 
 def _live_direct_command(raw: str, sub: str):
     if sub in {"", "join"}:
-        return talk_discord_live.start(_live_direct_invoker())
+        # One command: join the operator's voice channel first when the bot isn't in one.
+        return talk_discord_live.join_and_start(_live_direct_invoker())
     if sub in {"leave", "stop", "hang up"} and talk_discord_live.session_active():
-        return talk_discord_live.stop()
+        return talk_discord_live.stop_and_leave()
     if sub == "status" and talk_discord_live.session_active():
         return talk_discord_live.status()
     return None

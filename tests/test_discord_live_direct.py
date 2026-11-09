@@ -135,3 +135,77 @@ def test_default_source_has_no_jitter_buffer():
     a = b"\x03" * talk_discord.DISCORD_FRAME_BYTES
     frames.put(a)
     assert source.read() == a
+
+
+# -- one-command join / leave --------------------------------------------------------------------
+
+import asyncio as _asyncio
+
+
+class _FakeRunner:
+    def __init__(self, bridge_after_join=True):
+        self.joined = []
+        self.left = []
+        self.bridge_after_join = bridge_after_join
+
+    async def _handle_voice_channel_join(self, event):
+        self.joined.append(event)
+        return "Joined voice channel **General**."
+
+    async def _handle_voice_channel_leave(self, event):
+        self.left.append(event)
+        return "Left voice channel."
+
+
+def _wire(monkeypatch, runner, *, in_voice):
+    state = {"in_voice": in_voice}
+    monkeypatch.setattr(live, "_gateway_runner", lambda: runner)
+    monkeypatch.setattr(live, "_voice_event", lambda r: (object(), 42))
+    monkeypatch.setattr(live, "_bot_in_voice", lambda gid: state["in_voice"])
+    started = []
+    monkeypatch.setattr(live, "start", lambda op, gid=None: started.append((op, gid)) or "Starting GPT-Live")
+
+    async def join(event):
+        runner.joined.append(event)
+        state["in_voice"] = runner.bridge_after_join
+        return "Joined voice channel **General**."
+
+    runner._handle_voice_channel_join = join
+    return started
+
+
+def test_join_joins_voice_first_when_bot_is_not_in_a_channel(monkeypatch):
+    runner = _FakeRunner()
+    started = _wire(monkeypatch, runner, in_voice=False)
+    reply = _asyncio.run(live.join_and_start("111"))
+    assert len(runner.joined) == 1 and started == [(111, 42)]
+    assert "Joined voice channel" in reply and "Starting GPT-Live" in reply
+
+
+def test_join_skips_voice_join_when_already_connected(monkeypatch):
+    runner = _FakeRunner()
+    started = _wire(monkeypatch, runner, in_voice=True)
+    reply = _asyncio.run(live.join_and_start("111"))
+    assert runner.joined == [] and started == [(111, 42)] and reply == "Starting GPT-Live"
+
+
+def test_join_reports_failure_when_operator_is_not_in_voice(monkeypatch):
+    runner = _FakeRunner(bridge_after_join=False)
+    started = _wire(monkeypatch, runner, in_voice=False)
+    reply = _asyncio.run(live.join_and_start("111"))
+    assert started == [] and "Joined" in reply  # host's own message surfaces
+
+
+def test_join_refuses_non_operator_before_touching_voice(monkeypatch):
+    runner = _FakeRunner()
+    started = _wire(monkeypatch, runner, in_voice=False)
+    assert "Only a configured voice operator" in _asyncio.run(live.join_and_start("222"))
+    assert runner.joined == [] and started == []
+
+
+def test_leave_hangs_up_and_leaves_the_channel(monkeypatch):
+    runner = _FakeRunner()
+    monkeypatch.setattr(live, "_gateway_runner", lambda: runner)
+    monkeypatch.setattr(live, "_voice_event", lambda r: (object(), 42))
+    reply = _asyncio.run(live.stop_and_leave())
+    assert len(runner.left) == 1 and "left the voice channel" in reply

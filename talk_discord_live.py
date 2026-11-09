@@ -564,6 +564,92 @@ def start(invoker_user_id: Any, guild_id: int | None = None) -> str:
     return "Starting GPT-Live voice on your Codex subscription. Give it a few seconds, then talk."
 
 
+def _voice_event(runner: Any):
+    """A minimal MessageEvent for the host's /voice join|leave handlers, built from the live source."""
+
+    from gateway.platforms.event import MessageEvent
+    from gateway.plugin_messages import bound_route
+
+    source = bound_route()
+    if source is None:
+        raise talk_discord.TalkDiscordError("this command has no Discord source to join from")
+    try:
+        from gateway.session_context import get_session_env
+        guild = get_session_env("HERMES_SESSION_SCOPE_ID") or ""
+    except ImportError:
+        guild = ""
+    guild = getattr(source, "scope_id", None) or guild
+    if not str(guild).isdigit():
+        raise talk_discord.TalkDiscordError("voice only works inside a server, not in DMs")
+    from types import SimpleNamespace
+
+    return MessageEvent(
+        text="/voice join", source=source, user_id=getattr(source, "user_id", None),
+        raw_message=SimpleNamespace(guild_id=int(guild)),
+    ), int(guild)
+
+
+def _bot_in_voice(guild_id: int) -> bool:
+    with suppress(Exception):
+        talk_discord.resolve_voice_bridge(guild_id)
+        return True
+    return False
+
+
+async def _join_and_start(invoker_user_id: Any) -> str:
+    try:
+        operator = int(str(invoker_user_id))
+    except (TypeError, ValueError):
+        return "GPT-Live voice needs an identified Discord operator."
+    if operator not in operator_ids():
+        return "Only a configured voice operator can start GPT-Live voice."
+    joined_note = ""
+    try:
+        runner = _gateway_runner()
+        event, guild_id = _voice_event(runner)
+    except talk_discord.TalkDiscordError as exc:
+        return f"Can't start GPT-Live: {exc}."
+    if not _bot_in_voice(guild_id):
+        joined_note = str(await runner._handle_voice_channel_join(event) or "").strip()
+        if not _bot_in_voice(guild_id):
+            return joined_note or "Couldn't join your voice channel. Are you in one?"
+        await asyncio.sleep(0.5)  # let the receiver settle before the bridge taps it
+    reply = start(operator, guild_id)
+    return f"{joined_note}\n{reply}".strip() if joined_note else reply
+
+
+def join_and_start(invoker_user_id: Any):
+    """`/talk join`: joins the operator's voice channel if needed, then starts GPT-Live."""
+
+    return _join_and_start(invoker_user_id)
+
+
+async def _stop_and_leave() -> str:
+    with _STATE_LOCK:
+        task = _STATE.get("task")
+        live = _STATE.get("live")
+    reply = stop()
+    if task is not None:
+        with suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(task), 5)
+    with suppress(Exception):
+        runner = _gateway_runner()
+        event, _ = _voice_event(runner)
+        await runner._handle_voice_channel_leave(event)
+        return "GPT-Live voice hung up and left the voice channel."
+    if live is not None:
+        with suppress(Exception):
+            await live.adapter.leave_voice_channel(live.guild_id)
+            return "GPT-Live voice hung up and left the voice channel."
+    return reply
+
+
+def stop_and_leave():
+    """`/talk leave`: hang up GPT-Live and leave the voice channel."""
+
+    return _stop_and_leave()
+
+
 def stop() -> str:
     with _STATE_LOCK:
         task = _STATE.get("task")

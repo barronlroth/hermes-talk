@@ -51,8 +51,8 @@ AUDIENCE_CHECK_INTERVAL_S = 1.0
 INPUT_POLL_S = 0.005
 RECENT_TRANSCRIPT_LINES = 12
 
-ALFRED_LIVE_PERSONA = (
-    "You are Alfred, Barron's personal agent, speaking in a Discord voice channel. You are the "
+LIVE_PERSONA = (
+    "You are {name}, the user's personal agent, speaking in a Discord voice channel. You are the "
     "voice layer only. Speak naturally and casually, like a sharp friend: short sentences, no "
     "corporate filler. Keep replies brief unless asked for detail.\n\n"
     "Backchannel policy: Use light backchannels. Acknowledge naturally without competing with "
@@ -60,7 +60,7 @@ ALFRED_LIVE_PERSONA = (
     "Interruption policy: Stop speaking when the user interrupts. Listen to what they say.\n\n"
     "Delegation policy:\n"
     "Backend tools:\n"
-    "- Alfred backend: a full AI agent with tools and memory. It can check calendars, email, "
+    "- {name} backend: a full AI agent with tools and memory. It can check calendars, email, "
     "messages, the web, files, finances, reminders and smart home, run commands, remember "
     "things, and reason carefully. It is the one who actually does work and knows facts.\n\n"
     "Delegate to the backend when:\n"
@@ -328,10 +328,12 @@ class LiveDirectSession:
             )
         auth = await asyncio.to_thread(resolve_live_auth, config=config)
         extra = (os.environ.get("TALK_LIVE_DISCORD_INSTRUCTIONS") or "").strip()
+        name = (os.environ.get("TALK_LIVE_DISCORD_NAME") or "Hermes").strip() or "Hermes"
+        persona = LIVE_PERSONA.replace("{name}", name)
         setup = rt.SessionSetup(
             model=config.model,
             voice=config.voice,
-            instructions=f"{ALFRED_LIVE_PERSONA}\n\n{extra}" if extra else ALFRED_LIVE_PERSONA,
+            instructions=f"{persona}\n\n{extra}" if extra else persona,
         )
         self.session = LiveRealtimeSession(auth=auth, config=config)
         await self.session.connect(setup)
@@ -404,7 +406,7 @@ class LiveDirectSession:
             return
         if isinstance(event, rt.Transcript):
             if event.final and event.text:
-                who = "User" if event.role == rt.TranscriptRole.USER else "Alfred"
+                who = "User" if event.role == rt.TranscriptRole.USER else "Assistant"
                 self.transcript.append(f"{who}: {event.text.strip()}")
                 del self.transcript[:-RECENT_TRANSCRIPT_LINES * 2]
             return
@@ -469,7 +471,7 @@ class LiveDirectSession:
             return
         text = (turn.result or "").strip() or "The backend finished but returned no answer."
         text = text[:12000]
-        self.transcript.append(f"Alfred backend: {text[:600]}")
+        self.transcript.append(f"Backend: {text[:600]}")
         if not turn.spoken_timeout:
             await self.send([rt.SubmitDelegationResult(turn.delegation_id, text, kind="context")])
         else:
@@ -569,6 +571,6 @@ def reset_for_tests() -> None:
 
 
 __all__ = [
-    "ALFRED_LIVE_PERSONA", "admit_packet", "audience_ids", "operator_ids", "post_llm_call_hook",
+    "LIVE_PERSONA", "admit_packet", "audience_ids", "operator_ids", "post_llm_call_hook",
     "pre_llm_call_hook", "room_violation", "session_active", "start", "status", "stop",
 ]

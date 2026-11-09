@@ -25,6 +25,17 @@ SUBSCRIPTION_VOICES = (
     "sol",
     "spruce",
     "vale",
+    # GPT-Live 1.1 voices (2026-10-15), probed against the Codex subscription endpoint 2026-11-09.
+    # The endpoint picks the model server-side (it ignores the requested model id, which is why
+    # gpt-live-1-codex already runs 1.1) but rejects unknown voices.
+    "bubbie",  # English
+    "aube", "rivage",  # French
+    "sonna", "miko",  # German
+    "leher", "neer",  # Hindi
+    "himari", "rindo",  # Japanese
+    "haetsal", "hanul",  # Korean
+    "tinta", "arrullo",  # Mexican Spanish
+    "viola", "rio",  # Brazilian Portuguese
 )
 # OpenAI Live BuiltInVoice schema, checked 2026-09-12.
 API_VOICES = (

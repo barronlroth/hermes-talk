@@ -259,6 +259,18 @@ def admit_packet(packet: Any, operators: frozenset[int]) -> bytes | None:
 # Session
 # ---------------------------------------------------------------------------------------------
 
+def _full_band_transport(*, auth, config):
+    """GPT-Live WebRTC transport speaking Discord's native geometry: 48 kHz mono in, 48 kHz stereo out."""
+
+    try:
+        from .talk_live_audio import LiveWebRTCTransport
+    except ImportError:  # pragma: no cover - flat-module fallback
+        from talk_live_audio import LiveWebRTCTransport
+    return LiveWebRTCTransport(
+        auth=auth, config=config, input_rate=48_000, output_rate=48_000, output_layout="stereo"
+    )
+
+
 def session_active() -> bool:
     with _STATE_LOCK:
         task = _STATE.get("task")
@@ -284,7 +296,11 @@ class LiveDirectSession:
         self.runner = runner
         self.operators = operator_ids()
         self.allowed = audience_ids()
-        self.audio = talk_discord.DiscordAudio(self.guild_id)
+        # Full-band: 48 kHz in and out, no 24 kHz round trip, plus a small jitter buffer.
+        self.prebuffer_ms = int(os.environ.get("TALK_LIVE_DISCORD_PREBUFFER_MS") or 80)
+        self.audio = talk_discord.DiscordAudio(
+            self.guild_id, native_format=True, prebuffer_ms=self.prebuffer_ms
+        )
         self.session: LiveRealtimeSession | None = None
         self.transcript: list[str] = []
         self.ended_reason: str | None = None
@@ -335,7 +351,9 @@ class LiveDirectSession:
             voice=config.voice,
             instructions=f"{persona}\n\n{extra}" if extra else persona,
         )
-        self.session = LiveRealtimeSession(auth=auth, config=config)
+        self.session = LiveRealtimeSession(
+            auth=auth, config=config, transport_factory=_full_band_transport
+        )
         await self.session.connect(setup)
         self.audio.start()
         _log.info("live-direct: GPT-Live connected (%s/%s) guild=%s", config.model, config.voice,

@@ -43,7 +43,9 @@ def load_media_modules():
     return aiortc, av
 
 
-def create_pcm_audio_track(*, rtc_module=None, av_module=None):
+def create_pcm_audio_track(*, rtc_module=None, av_module=None, rate=PCM_RATE):
+    frame_samples = rate // 50  # 20 ms
+    max_pending = rate * 2 * 5
     if rtc_module is None or av_module is None:
         rtc_module, av_module = load_media_modules()
 
@@ -59,7 +61,7 @@ def create_pcm_audio_track(*, rtc_module=None, av_module=None):
                 raise rt.RealtimeSessionError("GPT-Live audio track is closed")
             if not isinstance(pcm, bytes) or len(pcm) % 2:
                 raise rt.RealtimeSessionError("GPT-Live input must be aligned PCM16 bytes")
-            if len(self._pending) + len(pcm) > MAX_PENDING_PCM_BYTES:
+            if len(self._pending) + len(pcm) > max_pending:
                 raise rt.RealtimeSessionError("GPT-Live input audio queue exceeded five seconds")
             self._pending.extend(pcm)
 
@@ -73,15 +75,15 @@ def create_pcm_audio_track(*, rtc_module=None, av_module=None):
             if self.readyState != "live":
                 raise rtc_module.mediastreams.MediaStreamError
             self._deadline = max(self._deadline + 0.020, loop.time())
-            count = min(FRAME_SAMPLES * 2, len(self._pending))
-            data = bytes(self._pending[:count]) + bytes(FRAME_SAMPLES * 2 - count)
+            count = min(frame_samples * 2, len(self._pending))
+            data = bytes(self._pending[:count]) + bytes(frame_samples * 2 - count)
             del self._pending[:count]
-            frame = av_module.AudioFrame(format="s16", layout="mono", samples=FRAME_SAMPLES)
+            frame = av_module.AudioFrame(format="s16", layout="mono", samples=frame_samples)
             frame.planes[0].update(data)
-            frame.sample_rate = PCM_RATE
-            frame.time_base = Fraction(1, PCM_RATE)
+            frame.sample_rate = rate
+            frame.time_base = Fraction(1, rate)
             frame.pts = self._pts
-            self._pts += FRAME_SAMPLES
+            self._pts += frame_samples
             return frame
 
         def stop(self):
@@ -92,14 +94,15 @@ def create_pcm_audio_track(*, rtc_module=None, av_module=None):
 
 
 class PcmOutputResampler:
-    def __init__(self, *, av_module=None):
+    def __init__(self, *, av_module=None, rate=PCM_RATE, layout="mono"):
         if av_module is None:
             _, av_module = load_media_modules()
-        self._resampler = av_module.AudioResampler(format="s16", layout="mono", rate=PCM_RATE)
+        self._bytes_per_sample = 2 * (2 if layout == "stereo" else 1)
+        self._resampler = av_module.AudioResampler(format="s16", layout=layout, rate=rate)
 
     def convert(self, frame) -> tuple[bytes, ...]:
         return tuple(
-            bytes(part.planes[0])[: part.samples * 2]
+            bytes(part.planes[0])[: part.samples * self._bytes_per_sample]
             for part in self._resampler.resample(frame)
             if part.samples
         )
@@ -115,7 +118,13 @@ class LiveWebRTCTransport:
         aiohttp_module=None,
         rtc_module=None,
         av_module=None,
+        input_rate=PCM_RATE,
+        output_rate=PCM_RATE,
+        output_layout="mono",
     ):
+        self.input_rate = input_rate
+        self.output_rate = output_rate
+        self.output_layout = output_layout
         self.auth = auth
         self.config = config
         self._http = http_client
@@ -151,7 +160,9 @@ class LiveWebRTCTransport:
         if self._rtc is None or self._av is None:
             self._rtc, self._av = load_media_modules()
         self._peer = self._rtc.RTCPeerConnection()
-        self._track = create_pcm_audio_track(rtc_module=self._rtc, av_module=self._av)
+        self._track = create_pcm_audio_track(
+            rtc_module=self._rtc, av_module=self._av, rate=self.input_rate
+        )
         self._peer.addTrack(self._track)
         connected = asyncio.Event()
 
@@ -223,7 +234,9 @@ class LiveWebRTCTransport:
             self._put(rt.RealtimeSessionError("GPT-Live sideband disconnected"))
 
     async def _read_audio(self, track):
-        converter = PcmOutputResampler(av_module=self._av)
+        converter = PcmOutputResampler(
+            av_module=self._av, rate=self.output_rate, layout=self.output_layout
+        )
         try:
             while not self._closed:
                 frame = await track.recv()

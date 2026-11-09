@@ -145,6 +145,20 @@ def discord_to_session(pcm48_stereo: bytes, *, carry: bytes = b"") -> tuple[byte
     return out.tobytes(), remainder
 
 
+def discord_to_mono48(pcm48_stereo: bytes, *, carry: bytes = b"") -> tuple[bytes, bytes]:
+    """48 kHz stereo -> 48 kHz mono (L/R average, no rate change). For full-band session lanes."""
+
+    data = carry + pcm48_stereo
+    if not data:
+        return b"", b""
+    usable = len(data) - (len(data) % 4)  # 2 samples * 2 bytes
+    remainder = data[usable:]
+    samples = array.array("h")
+    samples.frombytes(data[:usable])
+    out = array.array("h", ((samples[i] + samples[i + 1]) >> 1 for i in range(0, len(samples), 2)))
+    return out.tobytes(), remainder
+
+
 def session_to_discord(pcm24_mono: bytes, *, carry: int | None = None) -> tuple[bytes, int | None]:
     """24 kHz mono → 48 kHz stereo, linearly interpolated.
 
@@ -270,6 +284,12 @@ class _RealtimeSource:
         self._frames_served = 0
         self._discarded_bytes = 0
         self.authorize_playback = None
+        #: Jitter buffer (0 = upstream behavior). After an underrun, hold playback until this
+        #: many bytes are queued, so late network audio does not become silence gaps mid-word.
+        self.prebuffer_bytes = 0
+        self.prebuffer_max_wait_s = 0.15
+        self._primed = False
+        self._starved_since: float | None = None
 
     @property
     def frames_served(self) -> int:
@@ -288,17 +308,33 @@ class _RealtimeSource:
             self.discard_pending()
             return SILENCE_FRAME
         with self._carry_lock:
-            while len(self._carry) < DISCORD_FRAME_BYTES:
+            target = max(DISCORD_FRAME_BYTES, self.prebuffer_bytes if not self._primed else 0)
+            while len(self._carry) < target:
                 try:
                     self._carry += self._frames.get_nowait()
                 except queue.Empty:
                     break
+            if self.prebuffer_bytes and not self._primed:
+                if not self._carry:
+                    self._starved_since = None
+                    return SILENCE_FRAME
+                now = time.monotonic()
+                if self._starved_since is None:
+                    self._starved_since = now
+                if (len(self._carry) < self.prebuffer_bytes
+                        and now - self._starved_since < self.prebuffer_max_wait_s):
+                    return SILENCE_FRAME
+                self._primed = True
+                self._starved_since = None
+                if len(self._carry) % DISCORD_FRAME_BYTES:  # flush a short tail
+                    self._carry += bytes(DISCORD_FRAME_BYTES - len(self._carry) % DISCORD_FRAME_BYTES)
             if len(self._carry) >= DISCORD_FRAME_BYTES:
                 frame = bytes(self._carry[:DISCORD_FRAME_BYTES])
                 del self._carry[:DISCORD_FRAME_BYTES]
                 with self._served_lock:
                     self._frames_served += 1
                 return frame
+            self._primed = False  # underrun: re-arm the jitter buffer
         # Underrun: silence, never b"". An empty read retires the player
         # thread and the call goes permanently mute.
         return SILENCE_FRAME
@@ -394,9 +430,22 @@ class DiscordAudio:
     # dashboard sessions deliberately keep their existing authorization path.
     discord_speaker_authorization = True
 
-    def __init__(self, guild_id: int | None = None, *, capture_only: bool = False) -> None:
+    def __init__(
+        self,
+        guild_id: int | None = None,
+        *,
+        capture_only: bool = False,
+        native_format: bool = False,
+        prebuffer_ms: int = 0,
+    ) -> None:
         self._guild_id = guild_id
         self._capture_only = capture_only
+        #: Full-band lane: capture is 48 kHz mono and playback takes 48 kHz stereo as-is
+        #: (no 24 kHz round trip). Default keeps the upstream 24 kHz session contract.
+        self._native_format = native_format
+        self._prebuffer_bytes = max(0, int(prebuffer_ms)) // 20 * DISCORD_FRAME_BYTES
+        self._input_bytes_per_second = 48_000 * 2 if native_format else _SESSION_BYTES_PER_SECOND
+        self._input_silence = bytes(1_920) if native_format else SESSION_SILENCE
         self._bridge: dict[str, Any] | None = None
         self._source: _RealtimeSource | None = None
         self._inbound: queue.Queue[InputAudioPacket] = queue.Queue(maxsize=MAX_INPUT_FRAMES)
@@ -580,6 +629,8 @@ class DiscordAudio:
         self._disconnected_since = None
         if not self._capture_only:
             self._source = _new_source(self._outbound)
+            with suppress(Exception):
+                self._source.prebuffer_bytes = self._prebuffer_bytes
         self._audio_clock = time.monotonic()
         self._loop = _running_loop()
         if self._loop is None:
@@ -958,7 +1009,8 @@ class DiscordAudio:
                 # Per speaker: one speaker's partial sample group prepended
                 # to another's audio would shift it and transpose L/R for
                 # that chunk.
-                converted, remainder = discord_to_session(
+                converter = discord_to_mono48 if self._native_format else discord_to_session
+                converted, remainder = converter(
                     chunk, carry=self._capture_remainder.get(ssrc, b"")
                 )
                 self._capture_remainder[ssrc] = remainder
@@ -1240,7 +1292,7 @@ class DiscordAudio:
                 )
             # Real audio: advance the clock by however much we just sent, so
             # a burst of buffered speech does not earn extra silence after.
-            duration = len(packet.pcm) / _SESSION_BYTES_PER_SECOND
+            duration = len(packet.pcm) / self._input_bytes_per_second
             self._audio_clock = max(self._audio_clock, now) + duration
             return packet
         if self._audio_clock <= 0.0:  # not started
@@ -1248,7 +1300,7 @@ class DiscordAudio:
         if now < self._audio_clock:
             return None  # already sent audio covering this instant
         self._audio_clock += SESSION_FRAME_MS / 1000
-        return InputAudioPacket(speaker=None, pcm=SESSION_SILENCE)
+        return InputAudioPacket(speaker=None, pcm=self._input_silence)
 
     def read_input_chunk(self) -> bytes | None:
         """Generic audio-device seam; unwrap metadata for legacy consumers."""
@@ -1311,7 +1363,10 @@ class DiscordAudio:
             raise talk_audio.TalkAudioError("Discord canonical room authority changed")
         if not pcm:
             return
-        converted, self._carry_sample = session_to_discord(pcm, carry=self._carry_sample)
+        if self._native_format:  # already 48 kHz stereo s16le
+            converted = pcm[: len(pcm) - (len(pcm) % 4)]
+        else:
+            converted, self._carry_sample = session_to_discord(pcm, carry=self._carry_sample)
         if not converted:
             return
         try:

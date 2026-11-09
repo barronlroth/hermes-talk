@@ -24,6 +24,7 @@ TALK_LIVE_DISCORD_DIRECT=auto   # auto: only when the host lacks discord_task_co
 TALK_LIVE_DISCORD_NAME=Hermes   # name the voice persona uses
 TALK_LIVE_DISCORD_INSTRUCTIONS= # optional extra persona text
 TALK_LIVE_DISCORD_TURN_TIMEOUT_S=120
+TALK_LIVE_DISCORD_PREBUFFER_MS=80
 ```
 
 Install the `[live]` extra (`aiortc`) into the Python environment the **gateway** actually runs in.
@@ -37,6 +38,8 @@ Join a voice channel, then run `/voice join` followed by `/talk join`. Run `/tal
 - Hermes ≤ 0.22.7 folds plugin slash commands into a running agent turn as steer text, so `/talk join`
   sent while the agent is busy never reaches the plugin. This needs a host fix in
   `gateway/run_inbound.py` (`_hm_busy_slash_or_photo`) to dispatch plugin commands on the busy path.
-- The audio path resamples to 24 kHz mono and back with linear interpolation, so output quality is
-  only moderate. A 48 kHz end-to-end path is planned.
+- Audio runs at full band end to end. GPT-Live's WebRTC track is resampled once (by PyAV) straight to
+  Discord's 48 kHz stereo. Mic capture stays at 48 kHz (only L/R are averaged). An 80 ms jitter
+  buffer (`TALK_LIVE_DISCORD_PREBUFFER_MS`) re-arms after each underrun, so late packets do not
+  click mid-word. The upstream Realtime/native lanes keep their 24 kHz contract unchanged.
 - The upstream task-switching and project features of the canonical lane are not available here.

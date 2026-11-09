@@ -68,3 +68,70 @@ def test_start_refuses_non_operators_and_missing_config(monkeypatch):
 
 def test_start_needs_gateway_loop():
     assert "event loop" in live.start("111")
+
+
+# -- full-band audio path ----------------------------------------------------------------------
+
+import array
+import queue
+import time
+
+import talk_discord
+
+
+def test_discord_to_mono48_averages_channels_without_rate_change():
+    stereo = array.array("h", [100, 300, -50, 50, 7]).tobytes()
+    out, rest = talk_discord.discord_to_mono48(stereo)
+    assert array.array("h", out).tolist() == [200, 0]
+    assert rest == array.array("h", [7]).tobytes()
+    out2, rest2 = talk_discord.discord_to_mono48(array.array("h", [9]).tobytes(), carry=rest)
+    assert array.array("h", out2).tolist() == [8] and rest2 == b""
+
+
+def test_native_playback_passes_48k_stereo_through_untouched():
+    audio = talk_discord.DiscordAudio(1, native_format=True)
+    pcm = bytes(range(256)) * 15  # 3840 bytes
+    audio.queue_playback(pcm)
+    assert audio._outbound.get_nowait() == pcm
+
+
+def test_native_capture_paces_and_pads_at_48k():
+    audio = talk_discord.DiscordAudio(1, native_format=True)
+    assert len(audio._input_silence) == 1920
+    assert audio._input_bytes_per_second == 96_000
+
+
+def test_jitter_buffer_holds_until_primed_then_plays_and_rearms():
+    frames = queue.Queue()
+    source = talk_discord._RealtimeSource(frames)
+    source.prebuffer_bytes = 3 * talk_discord.DISCORD_FRAME_BYTES
+    source.prebuffer_max_wait_s = 10
+    a = b"\x01" * talk_discord.DISCORD_FRAME_BYTES
+    frames.put(a)
+    assert source.read() == talk_discord.SILENCE_FRAME  # 1 of 3 buffered: hold
+    frames.put(a); frames.put(a)
+    assert source.read() == a  # primed
+    assert source.read() == a and source.read() == a
+    assert source.read() == talk_discord.SILENCE_FRAME  # underrun re-arms
+    frames.put(a)
+    assert source.read() == talk_discord.SILENCE_FRAME
+
+
+def test_jitter_buffer_flushes_a_short_tail_after_max_wait():
+    frames = queue.Queue()
+    source = talk_discord._RealtimeSource(frames)
+    source.prebuffer_bytes = 4 * talk_discord.DISCORD_FRAME_BYTES
+    source.prebuffer_max_wait_s = 0.01
+    frames.put(b"\x02" * 100)
+    assert source.read() == talk_discord.SILENCE_FRAME
+    time.sleep(0.02)
+    frame = source.read()
+    assert frame[:100] == b"\x02" * 100 and len(frame) == talk_discord.DISCORD_FRAME_BYTES
+
+
+def test_default_source_has_no_jitter_buffer():
+    frames = queue.Queue()
+    source = talk_discord._RealtimeSource(frames)
+    a = b"\x03" * talk_discord.DISCORD_FRAME_BYTES
+    frames.put(a)
+    assert source.read() == a

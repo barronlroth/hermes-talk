@@ -1,7 +1,6 @@
 name: hermes-talk
 version: 0.22.0
 manifest_version: 1
-python_dependencies: ["aiortc>=1.14,<2"]  # local fork: GPT-Live on Discord needs WebRTC in the GATEWAY env
 kind: standalone
 description: "OpenAI Realtime speech-to-speech voice for Hermes: duplex talk with live tool calling."
 author: SmokeDev (TheSmokeDev)

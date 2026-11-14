@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "SmokeDev" }]
-dependencies = ["httpx>=0.27", "aiohttp>=3.9"]
+# Local fork: aiortc is core here (GPT-Live on Discord is the main lane), so Hermes installs it into the gateway env.
+dependencies = ["httpx>=0.27", "aiohttp>=3.9", "aiortc>=1.14,<2"]
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.4.6", "numpy>=1.26"]
